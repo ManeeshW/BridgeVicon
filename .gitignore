@@ -39,3 +39,31 @@
 
 # debug information files
 *.dwo
+
+.DS_Store
+*.swp
+*.swo
+*.bak
+*.tmp
+*.orig
+*.log
+*.cache
+*.pid
+*.aux
+*.class
+*.pyc
+*.pyo
+*.pyd           
+
+build/
+build-*
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+CMakeLists.txt.user
+CTestTestfile.cmake
+cmake_install.cmake
+Makefile
+Makefile.in
+*.cmake     
