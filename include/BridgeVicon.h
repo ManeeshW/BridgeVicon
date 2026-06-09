@@ -8,12 +8,15 @@
 #include <random>
 #include <queue>
 #include <chrono>
+#include <vector>
+
+struct ObjectPair {
+    std::string input_object;
+    std::string output_object;
+};
 
 struct BridgeConfig {
-    // Input Vicon settings
-    std::string input_object = "OriginsX@192.168.10.1";
-    // Output Vicon settings
-    std::string output_object = "Quad@192.168.1.67";
+    std::vector<ObjectPair> objects;
     int output_frequency = 200; // Hz
     // Noise settings
     bool enable_pos_noise = false;
@@ -44,6 +47,22 @@ private:
     double current_quat[4];
 };
 
+struct TrackerState {
+    Eigen::Vector3d position{0, 0, 0};
+    Eigen::Quaterniond quaternion{1, 0, 0, 0};
+    std::queue<std::pair<Eigen::Vector3d, Eigen::Quaterniond>> pose_queue;
+    std::chrono::steady_clock::time_point last_update;
+    std::chrono::steady_clock::time_point last_input_time;
+    bool has_valid_data = false;
+};
+
+class BridgeVicon;
+
+struct TrackerCallbackData {
+    BridgeVicon* bridge;
+    size_t index;
+};
+
 class BridgeVicon {
 public:
     BridgeVicon(const BridgeConfig& config);
@@ -53,26 +72,22 @@ public:
     static void callback(void* userdata, const vrpn_TRACKERCB tdata);
 
 private:
-    vrpn_Tracker_Remote* input_tracker;
-    OutputViconTracker* output_tracker;
-    vrpn_Connection* output_connection;
+    std::vector<vrpn_Tracker_Remote*> input_trackers;
+    std::vector<OutputViconTracker*> output_trackers;
+    std::vector<vrpn_Connection*> output_connections;
+    std::vector<TrackerState> states;
+    std::vector<TrackerCallbackData> callback_data;
 
     BridgeConfig config;
-    Eigen::Vector3d position;
-    Eigen::Quaterniond quaternion;
     std::default_random_engine rng;
     std::normal_distribution<double> pos_noise_dist;
     std::normal_distribution<double> att_noise_dist;
-    std::queue<std::pair<Eigen::Vector3d, Eigen::Quaterniond>> pose_queue;
-    std::chrono::steady_clock::time_point last_update;
-    std::chrono::steady_clock::time_point last_input_time;
-    bool has_valid_data = false;
 
     Eigen::Quaterniond eulerToQuaternion(double yaw, double pitch, double roll);
     Eigen::Quaterniond matrixToQuaternion(const Eigen::Matrix3d& R);
     void applyNoise(Eigen::Vector3d& pos, Eigen::Quaterniond& quat);
-    void sendPose();
-    void sendZeroPose();
+    void sendPose(size_t index);
+    void sendZeroPose(size_t index);
 };
 
 #endif
