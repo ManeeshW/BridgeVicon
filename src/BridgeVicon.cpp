@@ -3,6 +3,8 @@
 #include <sstream>
 #include <iostream>
 #include <thread>
+#include <map>
+#include <set>
 
 OutputViconTracker::OutputViconTracker(const std::string& name, vrpn_Connection* c)
     : vrpn_Tracker(name.c_str(), c) {
@@ -36,7 +38,7 @@ void OutputViconTracker::send_sim_pose() {
     char msgbuf[1000];
     int len = encode_to(msgbuf);
     if (len > 0) {
-        int result = d_connection->pack_message(len, timestamp, position_m_id, 
+        int result = d_connection->pack_message(len, timestamp, position_m_id,
                                                d_sender_id, msgbuf, vrpn_CONNECTION_RELIABLE);
         if (result < 0) {
             std::cerr << "Error: Failed to pack message for publishing\n";
@@ -54,10 +56,8 @@ void OutputViconTracker::mainloop() {
 BridgeVicon::BridgeVicon(const BridgeConfig& config)
     : config(config), rng(std::random_device{}()),
       pos_noise_dist(0.0, config.pos_noise_stddev),
-      att_noise_dist(0.0, config.att_noise_stddev),
-      last_update(std::chrono::steady_clock::now()),
-      last_input_time(std::chrono::steady_clock::now()),
-      has_valid_data(false) {
+      att_noise_dist(0.0, config.att_noise_stddev) {
+
     // Validate rotation inputs
     if (config.rotation_preference != "quaternion" && config.rotation_preference != "matrix") {
         std::cerr << "Warning: Invalid rotation_preference '" << config.rotation_preference
@@ -90,41 +90,74 @@ BridgeVicon::BridgeVicon(const BridgeConfig& config)
         }
     }
 
-    // Initialize input tracker
-    input_tracker = new vrpn_Tracker_Remote(config.input_object.c_str());
-    input_tracker->register_change_handler(this, BridgeVicon::callback);
+    size_t n = config.objects.size();
 
-    // Initialize output tracker
-    std::string connection_str = config.output_object.substr(config.output_object.find('@') + 1) + ":3883";
-    output_connection = vrpn_create_server_connection(connection_str.c_str());
-    output_tracker = new OutputViconTracker(config.output_object.substr(0, config.output_object.find('@')).c_str(), output_connection);
+    // Pre-size before registering callbacks so element pointers remain stable
+    callback_data.resize(n);
+    states.resize(n);
 
-    std::cout << "BridgeVicon: Initialized with input " << config.input_object
-              << " and output " << config.output_object << std::endl;
+    auto now = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < n; ++i) {
+        states[i].last_update = now;
+        states[i].last_input_time = now;
+        callback_data[i] = {this, i};
+    }
+
+    std::map<std::string, vrpn_Connection*> conn_pool;
+    for (size_t i = 0; i < n; ++i) {
+        const auto& obj = config.objects[i];
+
+        auto* tracker = new vrpn_Tracker_Remote(obj.input_object.c_str());
+        tracker->register_change_handler(&callback_data[i], BridgeVicon::callback);
+        input_trackers.push_back(tracker);
+
+        std::string connection_str = obj.output_object.substr(obj.output_object.find('@') + 1) + ":3883";
+        vrpn_Connection* conn;
+        auto it = conn_pool.find(connection_str);
+        if (it != conn_pool.end()) {
+            conn = it->second;
+        } else {
+            conn = vrpn_create_server_connection(connection_str.c_str());
+            conn_pool[connection_str] = conn;
+        }
+        auto* out_tracker = new OutputViconTracker(obj.output_object.substr(0, obj.output_object.find('@')), conn);
+        output_connections.push_back(conn);
+        output_trackers.push_back(out_tracker);
+
+        std::cout << "BridgeVicon: Object " << (i + 1) << " — input: " << obj.input_object
+                  << ", output: " << obj.output_object << "\n";
+    }
 }
 
 BridgeVicon::~BridgeVicon() {
-    sendZeroPose(); // Signal "off" on shutdown
-    delete input_tracker;
-    delete output_tracker;
-    delete output_connection;
+    for (size_t i = 0; i < output_trackers.size(); ++i)
+        sendZeroPose(i);
+    for (auto* t : input_trackers) delete t;
+    for (auto* t : output_trackers) delete t;
+    std::set<vrpn_Connection*> seen;
+    for (auto* c : output_connections)
+        if (seen.insert(c).second) delete c;
 }
 
 void BridgeVicon::callback(void* userdata, const vrpn_TRACKERCB tdata) {
-    BridgeVicon* self = static_cast<BridgeVicon*>(userdata);
+    TrackerCallbackData* cbd = static_cast<TrackerCallbackData*>(userdata);
+    BridgeVicon* self = cbd->bridge;
+    size_t idx = cbd->index;
+    TrackerState& state = self->states[idx];
+
     Eigen::Vector3d pos(tdata.pos[0], tdata.pos[1], tdata.pos[2]);
     Eigen::Quaterniond quat(tdata.quat[3], tdata.quat[0], tdata.quat[1], tdata.quat[2]); // VRPN: qx, qy, qz, qw
 
-    self->last_input_time = std::chrono::steady_clock::now();
-    self->has_valid_data = true;
+    state.last_input_time = std::chrono::steady_clock::now();
+    state.has_valid_data = true;
 
     if (self->config.enable_latency) {
-        self->pose_queue.push({pos, quat});
+        state.pose_queue.push({pos, quat});
     } else {
-        self->position = pos;
-        self->quaternion = quat;
-        self->applyNoise(self->position, self->quaternion);
-        self->sendPose();
+        state.position = pos;
+        state.quaternion = quat;
+        self->applyNoise(state.position, state.quaternion);
+        self->sendPose(idx);
     }
 }
 
@@ -181,40 +214,47 @@ void BridgeVicon::applyNoise(Eigen::Vector3d& pos, Eigen::Quaterniond& quat) {
     }
 }
 
-void BridgeVicon::sendPose() {
-    output_tracker->updatePose(
-        position.x(), position.y(), position.z(),
-        quaternion.x(), quaternion.y(), quaternion.z(), quaternion.w()
+void BridgeVicon::sendPose(size_t index) {
+    TrackerState& state = states[index];
+    output_trackers[index]->updatePose(
+        state.position.x(), state.position.y(), state.position.z(),
+        state.quaternion.x(), state.quaternion.y(), state.quaternion.z(), state.quaternion.w()
     );
 }
 
-void BridgeVicon::sendZeroPose() {
-    output_tracker->updatePose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
-    output_tracker->mainloop(); // Force send
+void BridgeVicon::sendZeroPose(size_t index) {
+    output_trackers[index]->updatePose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    output_trackers[index]->mainloop(); // Force send
 }
 
 void BridgeVicon::mainloop() {
-    input_tracker->mainloop();
-    output_tracker->mainloop();
-    output_connection->mainloop();
-
     auto now = std::chrono::steady_clock::now();
-    auto no_data_elapsed_sec = std::chrono::duration_cast<std::chrono::seconds>(now - last_input_time).count();
 
-    if (!has_valid_data || no_data_elapsed_sec >= config.no_data_timeout_sec) {
-        sendZeroPose(); // Signal "off" if no input data for timeout period
-    }
+    std::set<vrpn_Connection*> conn_seen;
+    for (size_t i = 0; i < input_trackers.size(); ++i) {
+        input_trackers[i]->mainloop();
+        output_trackers[i]->mainloop();
+        if (conn_seen.insert(output_connections[i]).second)
+            output_connections[i]->mainloop();
 
-    if (config.enable_latency && !pose_queue.empty()) {
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update).count();
-        if (elapsed_ms >= config.latency_ms) {
-            auto [pos, quat] = pose_queue.front();
-            pose_queue.pop();
-            position = pos;
-            quaternion = quat;
-            applyNoise(position, quaternion);
-            sendPose();
-            last_update = now;
+        TrackerState& state = states[i];
+        auto no_data_elapsed_sec = std::chrono::duration_cast<std::chrono::seconds>(now - state.last_input_time).count();
+
+        if (!state.has_valid_data || no_data_elapsed_sec >= config.no_data_timeout_sec) {
+            sendZeroPose(i);
+        }
+
+        if (config.enable_latency && !state.pose_queue.empty()) {
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.last_update).count();
+            if (elapsed_ms >= config.latency_ms) {
+                auto [pos, quat] = state.pose_queue.front();
+                state.pose_queue.pop();
+                state.position = pos;
+                state.quaternion = quat;
+                applyNoise(state.position, state.quaternion);
+                sendPose(i);
+                state.last_update = now;
+            }
         }
     }
 
