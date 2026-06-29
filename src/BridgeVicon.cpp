@@ -111,7 +111,7 @@ BridgeVicon::BridgeVicon(const BridgeConfig& config)
         tracker->register_change_handler(&callback_data[i], BridgeVicon::callback);
         input_trackers.push_back(tracker);
 
-        std::string connection_str = obj.output_object.substr(obj.output_object.find('@') + 1) + ":3883";
+        std::string connection_str = obj.output_object.substr(obj.output_object.find('@') + 1) + ":" + std::to_string(config.vrpn_port);
         vrpn_Connection* conn;
         auto it = conn_pool.find(connection_str);
         if (it != conn_pool.end()) {

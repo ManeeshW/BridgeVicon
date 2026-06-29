@@ -13,6 +13,7 @@
 struct ObjectPair {
     std::string input_object;
     std::string output_object;
+    bool object_on = true;
 };
 
 struct BridgeConfig {
@@ -33,6 +34,7 @@ struct BridgeConfig {
     double rot_matrix_offset[9] = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}; // Identity matrix
     // Timeout for no input data (send zero pose if exceeded)
     double no_data_timeout_sec = 10.0; // seconds
+    int vrpn_port = 3884;
 };
 
 class OutputViconTracker : public vrpn_Tracker {

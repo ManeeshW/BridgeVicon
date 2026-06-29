@@ -29,6 +29,7 @@ BridgeConfig readConfig(const std::string& filename) {
         std::getline(iss, value);
         key.erase(key.find_last_not_of(" \t") + 1);
         value.erase(0, value.find_first_not_of(" \t"));
+        if (!value.empty()) value.erase(value.find_last_not_of(" \t\r\n") + 1);
 
         try {
             if (section == "vicon") {
@@ -36,11 +37,13 @@ BridgeConfig readConfig(const std::string& filename) {
                 else if (key == "output_object") legacy_output = value;  // legacy single-object format
                 else if (key == "output_frequency") config.output_frequency = std::stoi(value);
                 else if (key == "no_data_timeout_sec") config.no_data_timeout_sec = std::stod(value);
+                else if (key == "vrpn_port") config.vrpn_port = std::stoi(value);
             } else if (section.size() > 7 && section.substr(0, 7) == "object_") {
                 try {
                     int idx = std::stoi(section.substr(7));
                     if (key == "input_object") object_map[idx].input_object = value;
                     else if (key == "output_object") object_map[idx].output_object = value;
+                    else if (key == "object_on") object_map[idx].object_on = (value == "true");
                 } catch (...) {}
             } else if (section == "noise") {
                 if (key == "enable_pos_noise") config.enable_pos_noise = (value == "true");
@@ -71,8 +74,12 @@ BridgeConfig readConfig(const std::string& filename) {
     }
 
     if (!object_map.empty()) {
-        for (auto& [idx, pair] : object_map)
-            config.objects.push_back(pair);
+        for (auto& [idx, pair] : object_map) {
+            if (pair.object_on)
+                config.objects.push_back(pair);
+            else
+                std::cout << "BridgeVicon: object_" << idx << " (" << pair.input_object << ") disabled (object_on=false)\n";
+        }
     } else if (!legacy_input.empty() && !legacy_output.empty()) {
         config.objects.push_back({legacy_input, legacy_output});
     }
