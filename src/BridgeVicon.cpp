@@ -102,6 +102,7 @@ BridgeVicon::BridgeVicon(const BridgeConfig& config)
         states[i].last_input_time = now;
         callback_data[i] = {this, i};
     }
+    next_tick = now;
 
     std::map<std::string, vrpn_Connection*> conn_pool;
     for (size_t i = 0; i < n; ++i) {
@@ -258,5 +259,20 @@ void BridgeVicon::mainloop() {
         }
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000 / config.output_frequency));
+    // Sleep to an absolute deadline rather than a fixed duration so the
+    // time spent doing VRPN work above doesn't push the loop period past
+    // 1/output_frequency (that skew was why the tracker published at
+    // ~193 Hz instead of the requested 200 Hz).
+    auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1.0 / config.output_frequency));
+    next_tick += period;
+
+    auto after_work = std::chrono::steady_clock::now();
+    if (next_tick < after_work) {
+        // Fell behind by more than a full period; resync instead of
+        // bursting through the backlog of missed ticks.
+        next_tick = after_work;
+    } else {
+        std::this_thread::sleep_until(next_tick);
+    }
 }
