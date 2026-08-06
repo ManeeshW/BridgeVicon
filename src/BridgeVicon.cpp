@@ -117,6 +117,8 @@ BridgeVicon::BridgeVicon(const BridgeConfig& config)
         std::cout << "BridgeVicon: Object " << (i + 1) << " — input: " << obj.input_object
                   << ", output: " << obj.output_object << "\n";
     }
+
+    next_tick = std::chrono::steady_clock::now();
 }
 
 BridgeVicon::~BridgeVicon() {
@@ -244,5 +246,14 @@ void BridgeVicon::mainloop() {
         }
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000 / config.output_frequency));
+    auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1.0 / config.output_frequency));
+    next_tick += period;
+
+    if (next_tick < now) {
+        // Fell behind by more than a period; resync instead of busy-catching-up.
+        next_tick = now + period;
+    } else {
+        std::this_thread::sleep_until(next_tick);
+    }
 }

@@ -82,6 +82,7 @@ private:
     std::default_random_engine rng;
     std::normal_distribution<double> pos_noise_dist;
     std::normal_distribution<double> att_noise_dist;
+    std::chrono::steady_clock::time_point next_tick;
 
     Eigen::Quaterniond eulerToQuaternion(double yaw, double pitch, double roll);
     Eigen::Quaterniond matrixToQuaternion(const Eigen::Matrix3d& R);
