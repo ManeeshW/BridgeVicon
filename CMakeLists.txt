@@ -37,7 +37,7 @@ check_cxx_source_compiles("int main(){return 0;}" HAVE_LD_WRAP)
 unset(CMAKE_REQUIRED_FLAGS)
 
 if (HAVE_LD_WRAP)
-    list(APPEND SOURCES src/net_reuseaddr.cpp)
+    list(APPEND SOURCES src/net_reuseaddr.cpp src/net_client_bounds.cpp)
 else()
     # Apple's ld and other linkers have no --wrap. The bridge still recovers,
     # it just has to wait out the TIME-WAIT window (BridgeVicon retries the
@@ -50,7 +50,7 @@ endif()
 add_executable(vicon_bridge ${SOURCES})
 
 if (HAVE_LD_WRAP)
-    set_target_properties(vicon_bridge PROPERTIES LINK_FLAGS "-Wl,--wrap=bind")
+    set_target_properties(vicon_bridge PROPERTIES LINK_FLAGS "-Wl,--wrap=bind,--wrap=accept,--wrap=listen")
 endif()
 
 # Link libraries
